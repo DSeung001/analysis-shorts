@@ -111,5 +111,64 @@ class SceneThresholdTests(unittest.TestCase):
         self.assertEqual(app.normalize_scene_threshold(0.236), 0.24)
 
 
-if __name__ == "__main__":
+class IntervalSecondsTests(unittest.TestCase):
+    def test_default_is_off(self):
+        self.assertEqual(app.normalize_interval_seconds(app.DEFAULT_INTERVAL_SECONDS), 0)
+
+    def test_clamps_to_zero(self):
+        self.assertEqual(app.normalize_interval_seconds(-5), 0)
+
+    def test_clamps_to_max(self):
+        self.assertEqual(app.normalize_interval_seconds(99), app.MAX_INTERVAL_SECONDS)
+
+    def test_rounds_to_nearest_int(self):
+        self.assertEqual(app.normalize_interval_seconds(2.6), 3)
+        self.assertEqual(app.normalize_interval_seconds(2.4), 2)
+
+    def test_valid_value(self):
+        self.assertEqual(app.normalize_interval_seconds(5), 5)
+
+
+class ExtractFramesFilterTests(unittest.TestCase):
+    """Smoke-test the FFmpeg arg construction without running FFmpeg."""
+
+    def _capture_args(self, scene_threshold, interval_seconds):
+        """Return the -vf argument that extract_frames would pass to ffmpeg."""
+        calls = []
+        import unittest.mock as mock
+        with mock.patch("app._tool_path", return_value=Path("/fake/ffmpeg")), \
+             mock.patch("app._run") as m_run:
+            # _run is stubbed; make it store args and pretend success.
+            m_run.side_effect = lambda args, timeout: calls.append(args) or None
+            with tempfile.TemporaryDirectory() as tmp:
+                try:
+                    app.extract_frames(
+                        Path(tmp) / "v.mp4",
+                        Path(tmp),
+                        scene_threshold,
+                        interval_seconds,
+                    )
+                except Exception:
+                    pass
+        if not calls:
+            return None
+        args = calls[0]
+        vf_idx = args.index("-vf")
+        return args[vf_idx + 1]
+
+    def test_no_interval_uses_scene_only(self):
+        vf = self._capture_args(0.35, 0)
+        self.assertIn("eq(n,0)+gt(scene,0.35)", vf)
+        self.assertNotIn("mod(t,", vf)
+
+    def test_with_interval_adds_mod(self):
+        vf = self._capture_args(0.35, 2)
+        self.assertIn("eq(n,0)+gt(scene,0.35)", vf)
+        self.assertIn("not(mod(t,2))", vf)
+
+    def test_select_wrapped_in_quotes(self):
+        vf = self._capture_args(0.20, 3)
+        self.assertTrue(vf.startswith("select='"))
+
+if __name__ == '__main__':
     unittest.main()
