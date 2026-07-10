@@ -23,6 +23,8 @@ from tkinter import filedialog, messagebox, ttk
 
 APP_NAME = "Shorts Frame Extractor"
 SCENE_THRESHOLD = 0.35
+MIN_SCENE_THRESHOLD = 0.10
+MAX_SCENE_THRESHOLD = 0.60
 MAX_FRAMES = 60
 DOWNLOAD_TIMEOUT_SECONDS = 300
 TARGET_WIDTH = 1080
@@ -137,6 +139,12 @@ def _run(args: list[str], timeout: int) -> subprocess.CompletedProcess:
     )
 
 
+def normalize_scene_threshold(value: float) -> float:
+    """Clamp and normalize scene threshold to a 2-decimal safe value."""
+    clamped = max(MIN_SCENE_THRESHOLD, min(MAX_SCENE_THRESHOLD, float(value)))
+    return round(clamped, 2)
+
+
 def download_video(url: str, temp_dir: Path) -> Path:
     """Download the video with the bundled yt-dlp and return its file path."""
     yt_dlp = _tool_path("yt-dlp")
@@ -209,11 +217,14 @@ def _select_downloaded_video(temp_dir: Path) -> Path | None:
 
 # --- Frame extraction -------------------------------------------------------
 
-def extract_frames(video_path: Path, output_dir: Path) -> list[Path]:
+def extract_frames(
+    video_path: Path, output_dir: Path, scene_threshold: float
+) -> list[Path]:
     """Extract the first frame plus scene-change frames as JPGs."""
     ffmpeg = _tool_path("ffmpeg")
+    scene_threshold = normalize_scene_threshold(scene_threshold)
     # Use arithmetic OR for broad FFmpeg expression compatibility.
-    select_expr = f"select='eq(n,0)+gt(scene,{SCENE_THRESHOLD})'"
+    select_expr = f"select='eq(n,0)+gt(scene,{scene_threshold})'"
     scale_expr = f"scale='min({TARGET_WIDTH},iw)':-2"
     args = [
         str(ffmpeg),
@@ -260,7 +271,7 @@ def limit_frames(frames: list[Path], max_count: int = MAX_FRAMES) -> list[Path]:
 
 # --- Job orchestration ------------------------------------------------------
 
-def run_job(url: str, output_base: str, on_status) -> Path:
+def run_job(url: str, output_base: str, on_status, scene_threshold: float = SCENE_THRESHOLD) -> Path:
     """Run the full pipeline and always clean up the temporary video.
 
     Returns the output directory. Raises ``JobError`` with a user-facing
@@ -284,12 +295,13 @@ def run_job(url: str, output_base: str, on_status) -> Path:
 
     with tempfile.TemporaryDirectory(prefix="shorts_job_") as temp_name:
         temp_dir = Path(temp_name)
+        scene_threshold = normalize_scene_threshold(scene_threshold)
 
         on_status("Downloading video...")
         video_path = download_video(url, temp_dir)
 
-        on_status("Extracting frames...")
-        frames = extract_frames(video_path, output_dir)
+        on_status(f"Extracting frames... (sensitivity {scene_threshold:.2f})")
+        frames = extract_frames(video_path, output_dir, scene_threshold)
 
         if not frames:
             raise JobError("No frames were generated from this video.")
@@ -325,7 +337,7 @@ class App:
 
     def _build_widgets(self) -> None:
         self.root.title(APP_NAME)
-        self.root.geometry("640x280")
+        self.root.geometry("640x330")
         self.root.resizable(False, False)
 
         pad = {"padx": 12, "pady": 4}
@@ -349,6 +361,25 @@ class App:
         ttk.Button(folder_row, text="Browse...", command=self._on_browse).pack(
             side="left", padx=(8, 0)
         )
+
+        ttk.Label(
+            frame, text="Sensitivity (lower threshold = more frames)"
+        ).pack(anchor="w")
+        sensitivity_row = ttk.Frame(frame)
+        sensitivity_row.pack(fill="x", **pad)
+        self.sensitivity_var = tk.DoubleVar(value=SCENE_THRESHOLD)
+        self.sensitivity_value_var = tk.StringVar(value=f"{SCENE_THRESHOLD:.2f}")
+        self.sensitivity_scale = ttk.Scale(
+            sensitivity_row,
+            from_=MIN_SCENE_THRESHOLD,
+            to=MAX_SCENE_THRESHOLD,
+            variable=self.sensitivity_var,
+            command=self._on_sensitivity_changed,
+        )
+        self.sensitivity_scale.pack(side="left", fill="x", expand=True)
+        ttk.Label(
+            sensitivity_row, textvariable=self.sensitivity_value_var, width=5
+        ).pack(side="left", padx=(8, 0))
 
         self.generate_btn = ttk.Button(
             frame, text="Generate Frames", command=self._on_generate
@@ -377,9 +408,14 @@ class App:
         if self.last_output_dir is not None:
             open_folder(self.last_output_dir)
 
+    def _on_sensitivity_changed(self, _value: str) -> None:
+        normalized = normalize_scene_threshold(self.sensitivity_var.get())
+        self.sensitivity_value_var.set(f"{normalized:.2f}")
+
     def _on_generate(self) -> None:
         url = self.url_var.get()
         output_base = self.folder_var.get()
+        scene_threshold = normalize_scene_threshold(self.sensitivity_var.get())
 
         base_path = Path(output_base).expanduser()
         if output_base and not base_path.exists():
@@ -394,15 +430,15 @@ class App:
         self._set_status("Starting...")
 
         thread = threading.Thread(
-            target=self._worker, args=(url, str(base_path)), daemon=True
+            target=self._worker, args=(url, str(base_path), scene_threshold), daemon=True
         )
         thread.start()
 
     # -- Worker thread -------------------------------------------------------
 
-    def _worker(self, url: str, output_base: str) -> None:
+    def _worker(self, url: str, output_base: str, scene_threshold: float) -> None:
         try:
-            output_dir = run_job(url, output_base, self._set_status)
+            output_dir = run_job(url, output_base, self._set_status, scene_threshold)
         except JobError as exc:
             self._on_error(str(exc))
         except Exception:  # noqa: BLE001 - convert to a friendly message
