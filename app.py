@@ -27,6 +27,7 @@ MAX_FRAMES = 60
 DOWNLOAD_TIMEOUT_SECONDS = 300
 TARGET_WIDTH = 1080
 MAX_DURATION_SECONDS = 180
+VIDEO_EXT_PRIORITY = (".mp4", ".webm", ".mkv", ".mov", ".m4v")
 
 ALLOWED_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
 
@@ -111,6 +112,20 @@ class JobError(Exception):
     """User-facing error raised during a job."""
 
 
+def _debug_log_path() -> Path:
+    return Path(tempfile.gettempdir()) / "shorts-frame-extractor.log"
+
+
+def _log_debug(message: str) -> None:
+    """Write a short debug line to the temp log without affecting app flow."""
+    try:
+        with _debug_log_path().open("a", encoding="utf-8") as fh:
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            fh.write(f"[{ts}] {message}\n")
+    except OSError:
+        pass
+
+
 def _run(args: list[str], timeout: int) -> subprocess.CompletedProcess:
     return subprocess.run(
         args,
@@ -144,9 +159,11 @@ def download_video(url: str, temp_dir: Path) -> Path:
     try:
         _run(args, DOWNLOAD_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired as exc:
+        _log_debug("yt-dlp timeout")
         raise JobError("The operation timed out.") from exc
     except subprocess.CalledProcessError as exc:
         stderr = (exc.stderr or "").lower()
+        _log_debug(f"yt-dlp failed: {(exc.stderr or '').strip()[-400:]}")
         if "private" in stderr or "unavailable" in stderr or "not available" in stderr:
             raise JobError(
                 "The video could not be downloaded. "
@@ -158,12 +175,36 @@ def download_video(url: str, temp_dir: Path) -> Path:
             "The download failed. Check your internet connection and try again."
         ) from exc
 
-    downloaded = sorted(temp_dir.glob("input.*"))
-    if not downloaded:
+    video_file = _select_downloaded_video(temp_dir)
+    if not video_file:
+        _log_debug(f"No downloadable input.* video found in {temp_dir}")
         raise JobError(
             "The video could not be downloaded. It may be private or unavailable."
         )
-    return downloaded[0]
+    return video_file
+
+
+def _select_downloaded_video(temp_dir: Path) -> Path | None:
+    """Pick the most likely final video file from yt-dlp output candidates."""
+    candidates = sorted(p for p in temp_dir.glob("input.*") if p.is_file())
+    if not candidates:
+        return None
+
+    for preferred_name in ("input.mp4", "input.webm", "input.mkv", "input.mov", "input.m4v"):
+        preferred = temp_dir / preferred_name
+        if preferred.is_file() and preferred.stat().st_size > 0:
+            return preferred
+
+    for ext in VIDEO_EXT_PRIORITY:
+        for candidate in candidates:
+            if candidate.suffix.lower() == ext and candidate.stat().st_size > 0:
+                return candidate
+
+    # Fallback for uncommon containers.
+    for candidate in candidates:
+        if candidate.stat().st_size > 0:
+            return candidate
+    return None
 
 
 # --- Frame extraction -------------------------------------------------------
@@ -171,7 +212,8 @@ def download_video(url: str, temp_dir: Path) -> Path:
 def extract_frames(video_path: Path, output_dir: Path) -> list[Path]:
     """Extract the first frame plus scene-change frames as JPGs."""
     ffmpeg = _tool_path("ffmpeg")
-    select_expr = f"select='or(eq(n,0),gt(scene,{SCENE_THRESHOLD}))'"
+    # Use arithmetic OR for broad FFmpeg expression compatibility.
+    select_expr = f"select='eq(n,0)+gt(scene,{SCENE_THRESHOLD})'"
     scale_expr = f"scale='min({TARGET_WIDTH},iw)':-2"
     args = [
         str(ffmpeg),
@@ -187,8 +229,10 @@ def extract_frames(video_path: Path, output_dir: Path) -> list[Path]:
     try:
         _run(args, DOWNLOAD_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired as exc:
+        _log_debug("ffmpeg timeout during frame extraction")
         raise JobError("The operation timed out.") from exc
     except subprocess.CalledProcessError as exc:
+        _log_debug(f"ffmpeg extraction failed: {(exc.stderr or '').strip()[-500:]}")
         raise JobError("Frame extraction failed.") from exc
 
     return sorted(output_dir.glob("frame_*.jpg"))

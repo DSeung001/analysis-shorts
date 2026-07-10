@@ -13,6 +13,11 @@ class ValidateUrlTests(unittest.TestCase):
         self.assertTrue(app.validate_youtube_url("https://www.youtube.com/shorts/abc123"))
         self.assertTrue(app.validate_youtube_url("https://youtube.com/shorts/abc123"))
         self.assertTrue(app.validate_youtube_url("https://m.youtube.com/shorts/abc123"))
+        self.assertTrue(
+            app.validate_youtube_url(
+                "https://youtube.com/shorts/KylLDrQjZ0E?si=YID3IsDUkuMDfcyg"
+            )
+        )
 
     def test_valid_youtu_be(self):
         self.assertTrue(app.validate_youtube_url("https://youtu.be/abc123"))
@@ -63,6 +68,33 @@ class LimitFramesTests(unittest.TestCase):
             frames = self._make_frames(60, tmp)
             result = app.limit_frames(frames, max_count=60)
             self.assertEqual(len(result), 60)
+
+
+class DownloadedVideoSelectionTests(unittest.TestCase):
+    def test_prefers_mp4_when_multiple_candidates_exist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_dir = Path(tmp)
+            (temp_dir / "input.f137.mp4").write_bytes(b"x")
+            (temp_dir / "input.webm").write_bytes(b"x")
+            (temp_dir / "input.mp4").write_bytes(b"x")
+
+            selected = app._select_downloaded_video(temp_dir)
+            self.assertIsNotNone(selected)
+            self.assertEqual(selected.name, "input.mp4")
+
+    def test_falls_back_to_nonempty_unknown_extension(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_dir = Path(tmp)
+            (temp_dir / "input.bin").write_bytes(b"x")
+
+            selected = app._select_downloaded_video(temp_dir)
+            self.assertIsNotNone(selected)
+            self.assertEqual(selected.name, "input.bin")
+
+    def test_returns_none_when_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            selected = app._select_downloaded_video(Path(tmp))
+            self.assertIsNone(selected)
 
 
 if __name__ == "__main__":
