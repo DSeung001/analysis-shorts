@@ -1,0 +1,143 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-latest-release
+  cancel-in-progress: true
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-build.txt
+
+      - name: Download yt-dlp
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force vendor | Out-Null
+          Invoke-WebRequest `
+            -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" `
+            -OutFile "vendor/yt-dlp.exe"
+
+      - name: Download Deno
+        shell: pwsh
+        run: |
+          Invoke-WebRequest `
+            -Uri "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip" `
+            -OutFile "vendor/deno.zip"
+          Expand-Archive "vendor/deno.zip" "vendor/deno-temp" -Force
+          Copy-Item "vendor/deno-temp/deno.exe" "vendor/deno.exe"
+
+      - name: Download FFmpeg
+        shell: pwsh
+        run: |
+          $release = Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/yt-dlp/FFmpeg-Builds/releases/latest"
+
+          $asset = $release.assets |
+            Where-Object {
+              $_.name -match "win64-gpl\.zip$" -and
+              $_.name -notmatch "\.sha256$"
+            } |
+            Select-Object -First 1
+
+          if (-not $asset) {
+            throw "Could not find a Windows x64 FFmpeg archive."
+          }
+
+          Invoke-WebRequest `
+            -Uri $asset.browser_download_url `
+            -OutFile "vendor/ffmpeg.zip"
+
+          Expand-Archive "vendor/ffmpeg.zip" "vendor/ffmpeg-temp" -Force
+
+          $ffmpeg = Get-ChildItem "vendor/ffmpeg-temp" -Recurse -Filter "ffmpeg.exe" |
+            Select-Object -First 1
+          $ffprobe = Get-ChildItem "vendor/ffmpeg-temp" -Recurse -Filter "ffprobe.exe" |
+            Select-Object -First 1
+
+          if (-not $ffmpeg -or -not $ffprobe) {
+            throw "FFmpeg binaries were not found in the archive."
+          }
+
+          Copy-Item $ffmpeg.FullName "vendor/ffmpeg.exe"
+          Copy-Item $ffprobe.FullName "vendor/ffprobe.exe"
+
+      - name: Build EXE
+        shell: pwsh
+        run: |
+          pyinstaller `
+            --noconfirm `
+            --clean `
+            --onefile `
+            --windowed `
+            --name "ShortsFrameExtractor" `
+            --add-binary "vendor/yt-dlp.exe;tools" `
+            --add-binary "vendor/deno.exe;tools" `
+            --add-binary "vendor/ffmpeg.exe;tools" `
+            --add-binary "vendor/ffprobe.exe;tools" `
+            app.py
+
+      - name: Smoke test artifact
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist/ShortsFrameExtractor.exe")) {
+            throw "Build output does not exist."
+          }
+
+          $size = (Get-Item "dist/ShortsFrameExtractor.exe").Length
+          if ($size -lt 10MB) {
+            throw "Build output is unexpectedly small."
+          }
+
+      - name: Move latest tag
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f latest $env:GITHUB_SHA
+          git push origin refs/tags/latest --force
+
+      - name: Create or update release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view latest 2>$null
+
+          if ($LASTEXITCODE -ne 0) {
+            gh release create latest `
+              --title "Latest Windows Build" `
+              --notes "Automatically built from the latest main branch commit."
+          } else {
+            gh release edit latest `
+              --title "Latest Windows Build" `
+              --notes "Automatically built from the latest main branch commit."
+          }
+
+          gh release upload latest `
+            "dist/ShortsFrameExtractor.exe" `
+            --clobber
