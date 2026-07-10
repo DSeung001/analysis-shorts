@@ -45,7 +45,15 @@ def resource_path(relative_path: str) -> Path:
 def _tool_path(name: str) -> Path:
     """Return the path to a bundled tool executable (adds .exe on Windows)."""
     exe = f"{name}.exe" if sys.platform == "win32" else name
-    return resource_path(f"tools/{exe}")
+    path = resource_path(f"tools/{exe}")
+    # Bundled binaries may lose the executable bit on POSIX; restore it.
+    if sys.platform != "win32":
+        try:
+            mode = path.stat().st_mode
+            path.chmod(mode | 0o111)
+        except OSError:
+            pass
+    return path
 
 
 # --- URL validation ---------------------------------------------------------

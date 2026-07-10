@@ -1,4 +1,4 @@
-name: Build Windows EXE
+name: Build Release
 
 on:
   push:
@@ -9,18 +9,46 @@ permissions:
   contents: write
 
 concurrency:
-  group: windows-latest-release
+  group: latest-release
   cancel-in-progress: true
 
 jobs:
-  build-windows:
-    runs-on: windows-latest
-
+  release:
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Move latest tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f latest "$GITHUB_SHA"
+          git push origin refs/tags/latest --force
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view latest >/dev/null 2>&1; then
+            gh release edit latest \
+              --title "Latest Build" \
+              --notes "Automatically built from the latest main branch commit."
+          else
+            gh release create latest \
+              --title "Latest Build" \
+              --notes "Automatically built from the latest main branch commit."
+          fi
+
+  build-windows:
+    needs: release
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -114,31 +142,96 @@ jobs:
             throw "Build output is unexpectedly small."
           }
 
-      - name: Move latest tag
-        shell: pwsh
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -f latest $env:GITHUB_SHA
-          git push origin refs/tags/latest --force
-
-      - name: Create or update release
+      - name: Upload EXE to release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view latest 2>$null
-
-          if ($LASTEXITCODE -ne 0) {
-            gh release create latest `
-              --title "Latest Windows Build" `
-              --notes "Automatically built from the latest main branch commit."
-          } else {
-            gh release edit latest `
-              --title "Latest Windows Build" `
-              --notes "Automatically built from the latest main branch commit."
-          }
-
           gh release upload latest `
             "dist/ShortsFrameExtractor.exe" `
+            --clobber
+
+  build-macos:
+    needs: release
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-build.txt
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-build.txt
+
+      - name: Download yt-dlp
+        run: |
+          mkdir -p vendor
+          curl -fL \
+            "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos" \
+            -o vendor/yt-dlp
+          chmod +x vendor/yt-dlp
+
+      - name: Download Deno
+        run: |
+          curl -fL \
+            "https://github.com/denoland/deno/releases/latest/download/deno-aarch64-apple-darwin.zip" \
+            -o vendor/deno.zip
+          unzip -o -q vendor/deno.zip -d vendor/deno-temp
+          cp vendor/deno-temp/deno vendor/deno
+          chmod +x vendor/deno
+
+      - name: Download FFmpeg
+        run: |
+          curl -fL \
+            "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip" \
+            -o vendor/ffmpeg.zip
+          curl -fL \
+            "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip" \
+            -o vendor/ffprobe.zip
+          unzip -o -q vendor/ffmpeg.zip -d vendor
+          unzip -o -q vendor/ffprobe.zip -d vendor
+          test -f vendor/ffmpeg || { echo "ffmpeg missing"; exit 1; }
+          test -f vendor/ffprobe || { echo "ffprobe missing"; exit 1; }
+          chmod +x vendor/ffmpeg vendor/ffprobe
+
+      - name: Build app bundle
+        run: |
+          pyinstaller \
+            --noconfirm \
+            --clean \
+            --windowed \
+            --name "ShortsFrameExtractor" \
+            --target-architecture arm64 \
+            --add-binary "vendor/yt-dlp:tools" \
+            --add-binary "vendor/deno:tools" \
+            --add-binary "vendor/ffmpeg:tools" \
+            --add-binary "vendor/ffprobe:tools" \
+            app.py
+
+      - name: Package app bundle
+        run: |
+          test -d "dist/ShortsFrameExtractor.app" || { echo "App bundle missing"; exit 1; }
+          ditto -c -k --keepParent \
+            "dist/ShortsFrameExtractor.app" \
+            "dist/ShortsFrameExtractor-macos-arm64.zip"
+          size=$(stat -f%z "dist/ShortsFrameExtractor-macos-arm64.zip")
+          if [ "$size" -lt 10000000 ]; then
+            echo "Build output is unexpectedly small ($size bytes)."
+            exit 1
+          fi
+
+      - name: Upload app bundle to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload latest \
+            "dist/ShortsFrameExtractor-macos-arm64.zip" \
             --clobber

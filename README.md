@@ -6,15 +6,26 @@ A minimal Windows app that extracts representative JPG frames from a YouTube Sho
 
 ## Download
 
-[Download the latest Windows EXE](https://github.com/DSeung001/analysis-shorts/releases/download/latest/ShortsFrameExtractor.exe)
+- **Windows (x64):** [ShortsFrameExtractor.exe](https://github.com/DSeung001/analysis-shorts/releases/download/latest/ShortsFrameExtractor.exe)
+- **macOS (Apple Silicon):** [ShortsFrameExtractor-macos-arm64.zip](https://github.com/DSeung001/analysis-shorts/releases/download/latest/ShortsFrameExtractor-macos-arm64.zip)
+
+> The macOS build is for Apple Silicon (M1 and later) only. It is not code-signed, so on first launch macOS may block it. Right-click the app and choose **Open**, then confirm. (Or run `xattr -dr com.apple.quarantine ShortsFrameExtractor.app`.)
 
 ## Usage
+
+### Windows
 
 1. Download and run `ShortsFrameExtractor.exe`.
 2. Paste a public YouTube Shorts URL.
 3. Select an output folder.
 4. Click **Generate Frames**.
 5. Open the generated output folder.
+
+### macOS
+
+1. Download and unzip `ShortsFrameExtractor-macos-arm64.zip`.
+2. Right-click `ShortsFrameExtractor.app` and choose **Open** on first launch.
+3. Follow the same steps as Windows.
 
 ## What it does
 
@@ -25,7 +36,7 @@ A minimal Windows app that extracts representative JPG frames from a YouTube Sho
 
 ## Limitations
 
-- Windows x64 only.
+- Windows x64 and macOS Apple Silicon only.
 - Public videos only.
 - One URL at a time.
 - YouTube changes may temporarily break downloading.
@@ -48,7 +59,7 @@ python -m unittest discover -s tests
 
 ## Build
 
-The Windows EXE is built automatically by GitHub Actions after a push to `main`. It bundles `yt-dlp.exe`, `ffmpeg.exe`, `ffprobe.exe`, and `deno.exe` into a single `--onefile --windowed` executable, then publishes it to the `latest` GitHub Release.
+Both artifacts are built automatically by GitHub Actions after a push to `main`. The Windows job produces a single `--onefile --windowed` `ShortsFrameExtractor.exe`; the macOS job produces an Apple Silicon `.app` bundle zipped as `ShortsFrameExtractor-macos-arm64.zip`. Each bundles `yt-dlp`, `ffmpeg`, `ffprobe`, and `deno`, and both are published to the `latest` GitHub Release.
 
 ## License
 
