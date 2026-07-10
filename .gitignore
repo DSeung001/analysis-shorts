@@ -1,0 +1,18 @@
+# Build artifacts
+vendor/
+dist/
+build/
+*.spec
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime log
+shorts-frame-extractor.log
