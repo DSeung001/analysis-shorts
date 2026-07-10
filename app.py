@@ -25,6 +25,8 @@ APP_NAME = "Shorts Frame Extractor"
 SCENE_THRESHOLD = 0.35
 MIN_SCENE_THRESHOLD = 0.10
 MAX_SCENE_THRESHOLD = 0.60
+DEFAULT_INTERVAL_SECONDS = 0
+MAX_INTERVAL_SECONDS = 10
 MAX_FRAMES = 60
 DOWNLOAD_TIMEOUT_SECONDS = 300
 TARGET_WIDTH = 1080
@@ -145,6 +147,11 @@ def normalize_scene_threshold(value: float) -> float:
     return round(clamped, 2)
 
 
+def normalize_interval_seconds(value: float) -> int:
+    """Clamp interval to 0–MAX_INTERVAL_SECONDS and round to nearest integer."""
+    return max(0, min(MAX_INTERVAL_SECONDS, int(round(float(value)))))
+
+
 def download_video(url: str, temp_dir: Path) -> Path:
     """Download the video with the bundled yt-dlp and return its file path."""
     yt_dlp = _tool_path("yt-dlp")
@@ -218,13 +225,27 @@ def _select_downloaded_video(temp_dir: Path) -> Path | None:
 # --- Frame extraction -------------------------------------------------------
 
 def extract_frames(
-    video_path: Path, output_dir: Path, scene_threshold: float
+    video_path: Path,
+    output_dir: Path,
+    scene_threshold: float,
+    interval_seconds: int = DEFAULT_INTERVAL_SECONDS,
 ) -> list[Path]:
-    """Extract the first frame plus scene-change frames as JPGs."""
+    """Extract the first frame plus scene-change frames as JPGs.
+
+    When *interval_seconds* > 0 the filter additionally captures one frame
+    every N seconds, regardless of scene changes, so more content is covered.
+    """
     ffmpeg = _tool_path("ffmpeg")
     scene_threshold = normalize_scene_threshold(scene_threshold)
-    # Use arithmetic OR for broad FFmpeg expression compatibility.
-    select_expr = f"select='eq(n,0)+gt(scene,{scene_threshold})'"
+    interval_seconds = normalize_interval_seconds(interval_seconds)
+
+    # Base expression: always grab frame 0 and scene-change frames.
+    # Use arithmetic OR (addition) for broad FFmpeg expression compatibility.
+    select_expr = f"eq(n,0)+gt(scene,{scene_threshold})"
+    if interval_seconds > 0:
+        # not(mod(t,N)) is true whenever t is an exact multiple of N seconds.
+        select_expr += f"+not(mod(t,{interval_seconds}))"
+
     scale_expr = f"scale='min({TARGET_WIDTH},iw)':-2"
     args = [
         str(ffmpeg),
@@ -232,7 +253,7 @@ def extract_frames(
         "-loglevel", "error",
         "-y",
         "-i", str(video_path),
-        "-vf", f"{select_expr},{scale_expr}",
+        "-vf", f"select='{select_expr}',{scale_expr}",
         "-fps_mode", "vfr",
         "-q:v", "2",
         str(output_dir / "frame_%03d.jpg"),
@@ -271,7 +292,13 @@ def limit_frames(frames: list[Path], max_count: int = MAX_FRAMES) -> list[Path]:
 
 # --- Job orchestration ------------------------------------------------------
 
-def run_job(url: str, output_base: str, on_status, scene_threshold: float = SCENE_THRESHOLD) -> Path:
+def run_job(
+    url: str,
+    output_base: str,
+    on_status,
+    scene_threshold: float = SCENE_THRESHOLD,
+    interval_seconds: int = DEFAULT_INTERVAL_SECONDS,
+) -> Path:
     """Run the full pipeline and always clean up the temporary video.
 
     Returns the output directory. Raises ``JobError`` with a user-facing
@@ -296,12 +323,14 @@ def run_job(url: str, output_base: str, on_status, scene_threshold: float = SCEN
     with tempfile.TemporaryDirectory(prefix="shorts_job_") as temp_name:
         temp_dir = Path(temp_name)
         scene_threshold = normalize_scene_threshold(scene_threshold)
+        interval_seconds = normalize_interval_seconds(interval_seconds)
 
         on_status("Downloading video...")
         video_path = download_video(url, temp_dir)
 
-        on_status(f"Extracting frames... (sensitivity {scene_threshold:.2f})")
-        frames = extract_frames(video_path, output_dir, scene_threshold)
+        extra = f", every {interval_seconds}s" if interval_seconds > 0 else ""
+        on_status(f"Extracting frames... (sensitivity {scene_threshold:.2f}{extra})")
+        frames = extract_frames(video_path, output_dir, scene_threshold, interval_seconds)
 
         if not frames:
             raise JobError("No frames were generated from this video.")
@@ -337,7 +366,7 @@ class App:
 
     def _build_widgets(self) -> None:
         self.root.title(APP_NAME)
-        self.root.geometry("640x330")
+        self.root.geometry("640x390")
         self.root.resizable(False, False)
 
         pad = {"padx": 12, "pady": 4}
@@ -363,7 +392,7 @@ class App:
         )
 
         ttk.Label(
-            frame, text="Sensitivity (lower threshold = more frames)"
+            frame, text="Sensitivity (lower = more scene-change frames)"
         ).pack(anchor="w")
         sensitivity_row = ttk.Frame(frame)
         sensitivity_row.pack(fill="x", **pad)
@@ -379,6 +408,25 @@ class App:
         self.sensitivity_scale.pack(side="left", fill="x", expand=True)
         ttk.Label(
             sensitivity_row, textvariable=self.sensitivity_value_var, width=5
+        ).pack(side="left", padx=(8, 0))
+
+        ttk.Label(
+            frame, text="Interval (0 = off; adds a frame every N seconds)"
+        ).pack(anchor="w")
+        interval_row = ttk.Frame(frame)
+        interval_row.pack(fill="x", **pad)
+        self.interval_var = tk.DoubleVar(value=DEFAULT_INTERVAL_SECONDS)
+        self.interval_value_var = tk.StringVar(value="off")
+        self.interval_scale = ttk.Scale(
+            interval_row,
+            from_=0,
+            to=MAX_INTERVAL_SECONDS,
+            variable=self.interval_var,
+            command=self._on_interval_changed,
+        )
+        self.interval_scale.pack(side="left", fill="x", expand=True)
+        ttk.Label(
+            interval_row, textvariable=self.interval_value_var, width=5
         ).pack(side="left", padx=(8, 0))
 
         self.generate_btn = ttk.Button(
@@ -412,10 +460,15 @@ class App:
         normalized = normalize_scene_threshold(self.sensitivity_var.get())
         self.sensitivity_value_var.set(f"{normalized:.2f}")
 
+    def _on_interval_changed(self, _value: str) -> None:
+        seconds = normalize_interval_seconds(self.interval_var.get())
+        self.interval_value_var.set("off" if seconds == 0 else f"{seconds}s")
+
     def _on_generate(self) -> None:
         url = self.url_var.get()
         output_base = self.folder_var.get()
         scene_threshold = normalize_scene_threshold(self.sensitivity_var.get())
+        interval_seconds = normalize_interval_seconds(self.interval_var.get())
 
         base_path = Path(output_base).expanduser()
         if output_base and not base_path.exists():
@@ -430,15 +483,17 @@ class App:
         self._set_status("Starting...")
 
         thread = threading.Thread(
-            target=self._worker, args=(url, str(base_path), scene_threshold), daemon=True
+            target=self._worker,
+            args=(url, str(base_path), scene_threshold, interval_seconds),
+            daemon=True,
         )
         thread.start()
 
     # -- Worker thread -------------------------------------------------------
 
-    def _worker(self, url: str, output_base: str, scene_threshold: float) -> None:
+    def _worker(self, url: str, output_base: str, scene_threshold: float, interval_seconds: int) -> None:
         try:
-            output_dir = run_job(url, output_base, self._set_status, scene_threshold)
+            output_dir = run_job(url, output_base, self._set_status, scene_threshold, interval_seconds)
         except JobError as exc:
             self._on_error(str(exc))
         except Exception:  # noqa: BLE001 - convert to a friendly message
