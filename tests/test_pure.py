@@ -97,5 +97,19 @@ class DownloadedVideoSelectionTests(unittest.TestCase):
             self.assertIsNone(selected)
 
 
+class SceneThresholdTests(unittest.TestCase):
+    def test_default_threshold(self):
+        self.assertEqual(app.normalize_scene_threshold(app.SCENE_THRESHOLD), 0.35)
+
+    def test_clamps_to_min(self):
+        self.assertEqual(app.normalize_scene_threshold(0.01), 0.10)
+
+    def test_clamps_to_max(self):
+        self.assertEqual(app.normalize_scene_threshold(1.2), 0.60)
+
+    def test_rounds_to_two_decimals(self):
+        self.assertEqual(app.normalize_scene_threshold(0.236), 0.24)
+
+
 if __name__ == "__main__":
     unittest.main()

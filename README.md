@@ -18,8 +18,9 @@ A minimal Windows app that extracts representative JPG frames from a YouTube Sho
 1. Download and run `ShortsFrameExtractor.exe`.
 2. Paste a public YouTube Shorts URL.
 3. Select an output folder.
-4. Click **Generate Frames**.
-5. Open the generated output folder.
+4. Adjust the sensitivity slider (`0.10~0.60`) as needed. Lower threshold values usually generate more frames.
+5. Click **Generate Frames**.
+6. Open the generated output folder.
 
 ### macOS
 
